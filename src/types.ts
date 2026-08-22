@@ -145,4 +145,6 @@ export interface AIAnalysisResult {
   spamReason?: string;
   possibleDuplicateId?: string;
   duplicateMatchConfidence?: number;
+  imageVerifiedByAI?: boolean; // true = Gemini vision actually analyzed the image; false = text-only heuristic
+  visualSubjectDetected?: string; // What the AI/heuristic thinks the photo shows (e.g. 'fire', 'flood', 'unknown')
 }

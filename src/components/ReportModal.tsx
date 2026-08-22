@@ -188,7 +188,8 @@ export const ReportModal: React.FC<ReportModalProps> = ({
       }
     } catch (err) {
       console.warn('AI processing client fallback:', err);
-      // Smart Client Fallback that accurately computes Photo-Title Match
+      // Client fallback: WITHOUT vision, we cannot verify the image matches the title.
+      // Scores are intentionally conservative.
       const titleLower = title.toLowerCase();
       const descLower = description.toLowerCase();
 
@@ -198,41 +199,63 @@ export const ReportModal: React.FC<ReportModalProps> = ({
       else if (titleLower.includes('road') || titleLower.includes('pothole')) category = 'Broken Road';
       else if (titleLower.includes('tree')) category = 'Fallen Tree';
       else if (titleLower.includes('garbage')) category = 'Garbage';
+      else if (titleLower.includes('traffic')) category = 'Traffic Congestion';
+      else if (titleLower.includes('power') || titleLower.includes('blackout')) category = 'Power Failure';
+      else if (titleLower.includes('accident') || titleLower.includes('crash')) category = 'Accident';
 
-      let score = 92;
-      let explanation = `The image content clearly supports the reported ${category.toLowerCase()} condition.`;
+      // Map categories to expected description keywords
+      const categoryKeywords: Record<string, string[]> = {
+        'Waterlogging': ['water', 'flood', 'submerge', 'waterlog', 'puddle', 'drain', 'rain'],
+        'Fire': ['fire', 'flame', 'smoke', 'burn', 'blaze'],
+        'Broken Road': ['pothole', 'crater', 'broken road', 'asphalt', 'cracked'],
+        'Fallen Tree': ['tree', 'branch', 'trunk', 'fallen', 'uprooted'],
+        'Garbage': ['garbage', 'trash', 'waste', 'dump', 'litter'],
+        'Traffic Congestion': ['traffic', 'jam', 'gridlock', 'congestion'],
+        'Power Failure': ['power', 'blackout', 'electricity', 'transformer'],
+        'Accident': ['accident', 'crash', 'collision'],
+      };
 
-      if (category === 'Waterlogging' && (descLower.includes('fire') || descLower.includes('flame') || descLower.includes('building') || descLower.includes('sunny'))) {
-        score = descLower.includes('fire') ? 6 : 8;
-        explanation = descLower.includes('fire')
-          ? 'The image depicts fire and smoke, which directly contradicts the title claiming waterlogging.'
-          : 'The image does not appear to show waterlogging, so it does not support the title.';
-      } else if (category === 'Fire' && (descLower.includes('water') || descLower.includes('flood') || descLower.includes('building') || descLower.includes('traffic'))) {
-        score = descLower.includes('water') ? 6 : 8;
-        explanation = descLower.includes('water')
-          ? 'The image shows flood conditions, which does not match the reported fire breakout.'
-          : 'The image does not show any signs of fire or smoke, so it does not support the title.';
-      } else if (category === 'Fire' && (descLower.includes('fire') || descLower.includes('smoke') || descLower.includes('flame'))) {
-        score = 94;
-        explanation = 'The image clearly shows a fire, which matches the reported fire breakout.';
-      } else if (category === 'Waterlogging' && (descLower.includes('water') || descLower.includes('flood') || descLower.includes('submerged'))) {
-        score = 95;
-        explanation = 'The image clearly shows waterlogging and submerged streets, matching the reported title.';
-      } else if (title && (!description || !title.split(' ').some((w: string) => w.length > 3 && descLower.includes(w.toLowerCase())))) {
+      const relevantKeywords = categoryKeywords[category] || [];
+      const descriptionMatchesTitle = relevantKeywords.some(kw => descLower.includes(kw));
+
+      // Check for contradictions: description mentions a different category
+      let hasContradiction = false;
+      for (const [otherCat, otherKws] of Object.entries(categoryKeywords)) {
+        if (otherCat !== category && otherKws.some(kw => descLower.includes(kw)) && !descriptionMatchesTitle) {
+          hasContradiction = true;
+          break;
+        }
+      }
+
+      let score: number;
+      let explanation: string;
+
+      if (hasContradiction) {
         score = 8;
-        explanation = `The uploaded photo does not appear to show ${category.toLowerCase()} and does not support the reported title.`;
+        explanation = `⚠️ Mismatch: The description text contradicts the reported ${category} title. Image could not be verified without AI vision.`;
+      } else if (descriptionMatchesTitle) {
+        score = 55;
+        explanation = `Description text aligns with ${category} title, but the uploaded image has not been verified by AI vision. Visual confirmation pending.`;
+      } else if (!description.trim()) {
+        score = 12;
+        explanation = `No description provided. Image could not be analyzed without AI vision. Photo-title relevance is unverified.`;
+      } else {
+        score = 15;
+        explanation = `The description does not clearly reference ${category.toLowerCase()} conditions. Image could not be verified by AI vision.`;
       }
 
       setAiResult({
         aiTitle: title || `${category} Incident Near ${landmark || 'Sector 5'}`,
-        category,
+        category: category as any,
         keywords: [category, 'Public Safety', 'Community Report'],
         severity: 'Medium',
         aiConfidence: score,
         photoTitleMatchScore: score,
         photoTitleExplanation: explanation,
         detectedSummary: `Detected ${category.toLowerCase()} condition reported near ${landmark || 'Location'}`,
-        isSpamOrIrrelevant: score < 20,
+        isSpamOrIrrelevant: score < 20 && hasContradiction,
+        imageVerifiedByAI: false,
+        visualSubjectDetected: 'unknown',
       });
     } finally {
       clearInterval(stepTimer);
@@ -526,51 +549,106 @@ export const ReportModal: React.FC<ReportModalProps> = ({
               ) : (
                 aiResult && (
                   <div className="space-y-4">
-                    {/* Photo-Title Match Relevance Card */}
-                    <div
-                      className={`p-4 rounded-2xl border space-y-2.5 transition-all ${
-                        (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 70
-                          ? 'bg-emerald-500/10 border-emerald-500/30 dark:bg-emerald-500/10'
-                          : (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 40
-                          ? 'bg-amber-500/10 border-amber-500/30 dark:bg-amber-500/10'
-                          : 'bg-rose-500/10 border-rose-500/30 dark:bg-rose-500/10'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold flex items-center space-x-1.5 text-slate-900 dark:text-white text-sm">
-                          <Sparkles className="w-4 h-4 text-orange-500" />
-                          <span>Photo–Title Match: {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence)}%</span>
-                        </span>
-                        <span
-                          className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
-                            (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 70
-                              ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
-                              : (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 40
-                              ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
-                              : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30'
-                          }`}
-                        >
-                          {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 70
-                            ? 'High Relevance'
-                            : (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 40
-                            ? 'Moderate Relevance'
-                            : 'Low Relevance'}
-                        </span>
+                    {/* Unverified Badge — when no AI vision was used */}
+                    {aiResult.imageVerifiedByAI === false && (
+                      <div className="flex items-center space-x-2 p-3 rounded-xl bg-slate-800/60 border border-slate-700 text-xs">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
+                        <div>
+                          <span className="font-bold text-amber-300">Image Not Verified by AI Vision</span>
+                          <p className="text-slate-400 mt-0.5">AI vision analysis is unavailable. Results are based on text comparison only and may be inaccurate. The report will be submitted for manual review.</p>
+                        </div>
                       </div>
+                    )}
 
-                      <p className="text-xs text-slate-700 dark:text-slate-300 font-medium leading-relaxed bg-white/50 dark:bg-zinc-900/50 p-2.5 rounded-xl border border-black/5 dark:border-white/5">
-                        {aiResult.photoTitleExplanation || aiResult.detectedSummary}
-                      </p>
+                    {/* Photo + Score Side-by-Side */}
+                    <div className="flex items-start gap-3">
+                      {/* Uploaded Photo Thumbnail */}
+                      {photoDataUrl && (
+                        <div className="flex-shrink-0 w-20 h-20 rounded-xl overflow-hidden border-2 border-slate-700 relative">
+                          <img src={photoDataUrl} alt="Uploaded" className="w-full h-full object-cover" />
+                          {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) < 40 && (
+                            <div className="absolute inset-0 bg-rose-900/40 flex items-center justify-center">
+                              <X className="w-6 h-6 text-rose-300" />
+                            </div>
+                          )}
+                        </div>
+                      )}
 
-                      <div className="pt-1">
-                        <span className="text-[10px] uppercase font-bold text-slate-400">
-                          Standardized Title
-                        </span>
-                        <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
-                          {aiResult.aiTitle}
-                        </h3>
+                      {/* Photo-Title Match Relevance Card */}
+                      <div
+                        className={`flex-1 p-4 rounded-2xl border space-y-2.5 transition-all ${
+                          (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 70
+                            ? 'bg-emerald-500/10 border-emerald-500/30 dark:bg-emerald-500/10'
+                            : (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 40
+                            ? 'bg-amber-500/10 border-amber-500/30 dark:bg-amber-500/10'
+                            : 'bg-rose-500/10 border-rose-500/30 dark:bg-rose-500/10'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between text-xs flex-wrap gap-1">
+                          <span className="font-bold flex items-center space-x-1.5 text-slate-900 dark:text-white text-sm">
+                            <Sparkles className="w-4 h-4 text-orange-500" />
+                            <span>Photo–Title Match: {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence)}%</span>
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            {aiResult.imageVerifiedByAI === false && (
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-700/50 text-slate-400 border border-slate-600">
+                                Unverified
+                              </span>
+                            )}
+                            <span
+                              className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
+                                (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 70
+                                  ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30'
+                                  : (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 40
+                                  ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30'
+                                  : 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/30'
+                              }`}
+                            >
+                              {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 70
+                                ? 'High Relevance'
+                                : (aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) >= 40
+                                ? 'Moderate Relevance'
+                                : 'Low Relevance'}
+                            </span>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-700 dark:text-slate-300 font-medium leading-relaxed bg-white/50 dark:bg-zinc-900/50 p-2.5 rounded-xl border border-black/5 dark:border-white/5">
+                          {aiResult.photoTitleExplanation || aiResult.detectedSummary}
+                        </p>
+
+                        <div className="pt-1">
+                          <span className="text-[10px] uppercase font-bold text-slate-400">
+                            Standardized Title
+                          </span>
+                          <h3 className="text-sm font-extrabold text-slate-900 dark:text-white">
+                            {aiResult.aiTitle}
+                          </h3>
+                        </div>
                       </div>
                     </div>
+
+                    {/* Mismatch Warning — when score is below 40% */}
+                    {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) < 40 && (
+                      <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 space-y-2 text-xs">
+                        <div className="flex items-center space-x-2 font-bold text-rose-600 dark:text-rose-400">
+                          <AlertTriangle className="w-4 h-4" />
+                          <span>Photo–Title Mismatch Detected</span>
+                        </div>
+                        <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                          The uploaded photo {aiResult.imageVerifiedByAI ? 'does not visually match' : 'could not be verified to match'} the reported title <strong>"{title}"</strong>.
+                          {(aiResult.photoTitleMatchScore ?? aiResult.aiConfidence) < 20
+                            ? ' This report will be submitted as "Under Review" and flagged for manual verification by moderators.'
+                            : ' This report may require additional verification.'}
+                        </p>
+                        <div className="flex items-center space-x-2 pt-0.5">
+                          <span className="inline-flex items-center space-x-1 px-2.5 py-1 rounded-lg bg-rose-600/15 text-rose-500 dark:text-rose-400 font-bold text-[11px] border border-rose-500/20">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            <span>Status: Under Review</span>
+                          </span>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Category & Keywords */}
                     <div className="grid grid-cols-2 gap-3 text-xs">

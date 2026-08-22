@@ -28,6 +28,9 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 // Helper: Analyze Photo-Title Relevance and Scene Semantics
+// NOTE: Without Gemini vision, this function CANNOT see the image.
+// It can only cross-reference title vs description text.
+// Scores are intentionally conservative (low/uncertain) without vision verification.
 function analyzeIncidentRelevance(params: {
   reportedTitle: string;
   reportedDesc: string;
@@ -35,7 +38,7 @@ function analyzeIncidentRelevance(params: {
   exifLocation?: any;
   imageData?: string;
 }) {
-  const { reportedTitle, reportedDesc, landmark, exifLocation, imageData } = params;
+  const { reportedTitle, reportedDesc, landmark, exifLocation } = params;
   const titleLower = reportedTitle.toLowerCase();
   const descLower = reportedDesc.toLowerCase();
   const combinedText = `${reportedTitle} ${reportedDesc}`.toLowerCase();
@@ -65,65 +68,67 @@ function analyzeIncidentRelevance(params: {
     else if (combinedText.includes('power')) category = 'Power Failure';
   }
 
-  // 2. Identify visual subject depicted in image/description
-  let visualSubject = 'unclear';
-  if (descLower.includes('fire') || descLower.includes('flame') || descLower.includes('smoke') || descLower.includes('burn') || descLower.includes('blaze')) {
-    visualSubject = 'fire';
-  } else if (descLower.includes('water') || descLower.includes('flood') || descLower.includes('submerged') || descLower.includes('waterlog') || descLower.includes('puddle')) {
-    visualSubject = 'waterlogging';
-  } else if (descLower.includes('pothole') || descLower.includes('crater') || descLower.includes('broken road') || descLower.includes('asphalt damage')) {
-    visualSubject = 'broken road';
-  } else if (descLower.includes('fallen tree') || descLower.includes('branch blocking') || descLower.includes('fallen trunk')) {
-    visualSubject = 'fallen tree';
-  } else if (descLower.includes('garbage pile') || descLower.includes('waste overflow') || descLower.includes('trash dump')) {
-    visualSubject = 'garbage';
-  } else if (descLower.includes('traffic jam') || descLower.includes('gridlock') || descLower.includes('vehicle queue')) {
-    visualSubject = 'traffic';
-  } else if (descLower.includes('building') || descLower.includes('sunny') || descLower.includes('office') || descLower.includes('clear sky') || descLower.includes('park') || descLower.includes('selfie') || descLower.includes('indoor')) {
-    visualSubject = 'unrelated_building_or_clear';
+  // 2. Map incident categories to related keywords for cross-checking
+  const categoryKeywordMap: Record<string, string[]> = {
+    'Waterlogging': ['water', 'flood', 'submerge', 'waterlog', 'puddle', 'drain', 'rain', 'inundat'],
+    'Fire': ['fire', 'flame', 'smoke', 'burn', 'blaze', 'inferno', 'charred'],
+    'Broken Road': ['pothole', 'crater', 'broken road', 'asphalt', 'cracked', 'damaged road', 'road damage'],
+    'Fallen Tree': ['fallen tree', 'tree', 'branch', 'trunk', 'uprooted'],
+    'Garbage': ['garbage', 'trash', 'waste', 'dump', 'litter', 'overflow', 'rubbish'],
+    'Traffic Congestion': ['traffic', 'jam', 'gridlock', 'congestion', 'vehicle queue', 'stuck'],
+    'Power Failure': ['power', 'blackout', 'electricity', 'transformer', 'wire', 'outage'],
+    'Accident': ['accident', 'crash', 'collision', 'wreck', 'hit'],
+    'Road Block': ['block', 'barricade', 'obstruction', 'closed', 'barrier'],
+    'Water Leakage': ['leak', 'pipe', 'burst', 'seepage'],
+    'Building Damage': ['building', 'wall', 'collapse', 'crack', 'structural'],
+    'Animal Hazard': ['animal', 'dog', 'cattle', 'snake', 'stray'],
+  };
+
+  // 3. Check if description keywords match what the title category claims
+  const categoryKeywords = categoryKeywordMap[category] || [];
+  const descriptionMatchesTitle = categoryKeywords.some(kw => descLower.includes(kw));
+
+  // 4. Check for explicit cross-category contradictions
+  // (e.g. title says "waterlogging" but description mentions "fire")
+  let hasContradiction = false;
+  let contradictionDetail = '';
+  for (const [otherCat, otherKeywords] of Object.entries(categoryKeywordMap)) {
+    if (otherCat !== category) {
+      const contradictingKeyword = otherKeywords.find(kw => descLower.includes(kw));
+      if (contradictingKeyword && !descriptionMatchesTitle) {
+        hasContradiction = true;
+        contradictionDetail = `Description mentions "${contradictingKeyword}" which relates to ${otherCat}, contradicting the title's claim of ${category}.`;
+        break;
+      }
+    }
   }
 
   const locationStr = landmark || exifLocation?.city || 'Near City Center';
   const aiTitle = reportedTitle || `${category} Incident Near ${locationStr.split(',')[0]}`;
 
-  let photoTitleMatchScore = 92;
-  let photoTitleExplanation = `The image content clearly supports the reported ${category.toLowerCase()} condition.`;
+  // 5. Compute score — without AI vision, we CANNOT verify the image matches
+  // Scores are intentionally conservative:
+  //   - If description strongly aligns with title keywords: moderate score (55-65%)
+  //   - If description contradicts title: very low score (5-10%)
+  //   - If no clear signal either way: low/uncertain score (12-18%)
+  let photoTitleMatchScore: number;
+  let photoTitleExplanation: string;
 
-  // 3. Multimodal comparison logic
-  if (category === 'Waterlogging' && (visualSubject === 'fire' || visualSubject === 'unrelated_building_or_clear')) {
-    photoTitleMatchScore = visualSubject === 'fire' ? 6 : 8;
-    photoTitleExplanation = visualSubject === 'fire'
-      ? 'The image depicts fire and smoke, which directly contradicts the title claiming waterlogging.'
-      : 'The image does not appear to show waterlogging, so it does not support the title.';
-  } else if (category === 'Fire' && (visualSubject === 'waterlogging' || visualSubject === 'unrelated_building_or_clear' || visualSubject === 'traffic')) {
-    photoTitleMatchScore = visualSubject === 'waterlogging' ? 6 : 8;
-    photoTitleExplanation = visualSubject === 'waterlogging'
-      ? 'The image shows water and flood conditions, which does not match the reported fire breakout.'
-      : 'The image does not show any signs of fire or smoke, so it does not support the title.';
-  } else if (category === 'Broken Road' && (visualSubject === 'fire' || visualSubject === 'unrelated_building_or_clear')) {
-    photoTitleMatchScore = 6;
-    photoTitleExplanation = 'The image does not show road damage or potholes, so it does not support the title.';
-  } else if (visualSubject === 'unrelated_building_or_clear') {
+  if (hasContradiction) {
     photoTitleMatchScore = 8;
-    photoTitleExplanation = `The uploaded photo does not appear to show ${category.toLowerCase()}, so it does not support the reported title.`;
-  } else if (category === 'Fire' && (visualSubject === 'fire' || descLower.includes('fire') || descLower.includes('smoke') || descLower.includes('flame'))) {
-    photoTitleMatchScore = 94;
-    photoTitleExplanation = 'The image clearly shows a fire, which matches the reported fire breakout.';
-  } else if (category === 'Waterlogging' && (visualSubject === 'waterlogging' || descLower.includes('water') || descLower.includes('flood') || descLower.includes('submerged'))) {
-    photoTitleMatchScore = 95;
-    photoTitleExplanation = 'The image clearly shows waterlogging and submerged streets, matching the reported title.';
-  } else if (category === 'Broken Road' && (visualSubject === 'broken road' || descLower.includes('pothole') || descLower.includes('crater') || descLower.includes('asphalt'))) {
-    photoTitleMatchScore = 93;
-    photoTitleExplanation = 'The image clearly shows road potholes and surface damage, directly confirming the title.';
-  } else if (category === 'Fallen Tree' && (visualSubject === 'fallen tree' || descLower.includes('tree') || descLower.includes('branch'))) {
-    photoTitleMatchScore = 94;
-    photoTitleExplanation = 'The photo displays fallen branches obstructing the route, matching the reported title.';
-  } else if (category === 'Garbage' && (visualSubject === 'garbage' || descLower.includes('garbage') || descLower.includes('trash') || descLower.includes('waste'))) {
-    photoTitleMatchScore = 91;
-    photoTitleExplanation = 'The image clearly shows waste accumulation, directly supporting the reported title.';
-  } else if (reportedTitle && (!reportedDesc || !reportedTitle.split(' ').some((w: string) => w.length > 3 && descLower.includes(w.toLowerCase())))) {
-    photoTitleMatchScore = 8;
-    photoTitleExplanation = `The uploaded photo does not appear to show ${category.toLowerCase()} and does not support the reported title.`;
+    photoTitleExplanation = `⚠️ Mismatch detected: ${contradictionDetail} Image could not be verified without AI vision.`;
+  } else if (descriptionMatchesTitle) {
+    // Description text aligns with title, but we still can't verify the IMAGE
+    photoTitleMatchScore = 55;
+    photoTitleExplanation = `The description text aligns with the reported ${category.toLowerCase()} title, but the uploaded image has not been verified by AI vision. Visual confirmation is pending.`;
+  } else if (!reportedDesc.trim()) {
+    // No description at all — no way to verify
+    photoTitleMatchScore = 12;
+    photoTitleExplanation = `No description provided and image could not be analyzed without AI vision. Photo-title relevance is unverified.`;
+  } else {
+    // Description exists but doesn't contain category-relevant keywords
+    photoTitleMatchScore = 15;
+    photoTitleExplanation = `The description does not clearly reference ${category.toLowerCase()} conditions. The uploaded image could not be verified by AI vision, so photo-title relevance remains uncertain.`;
   }
 
   return {
@@ -135,7 +140,9 @@ function analyzeIncidentRelevance(params: {
     photoTitleMatchScore,
     photoTitleExplanation,
     detectedSummary: `Detected ${category.toLowerCase()} condition reported near ${locationStr}`,
-    isSpamOrIrrelevant: photoTitleMatchScore < 20,
+    isSpamOrIrrelevant: photoTitleMatchScore < 20 && hasContradiction,
+    imageVerifiedByAI: false, // No Gemini vision was used
+    visualSubjectDetected: 'unknown', // Cannot determine without vision
   };
 }
 
@@ -181,56 +188,104 @@ app.post('/api/ai/process-incident', async (req, res) => {
       }
 
       const promptText = `
-You are the Multimodal Vision & Semantic Verification Engine for the Arka Citizen Incident Portal.
-Compare what the photo visually shows with what the user's title claims/describes.
-Determine whether the photo and the title refer to the same real-world event/subject.
+You are a strict Image-vs-Title Verification Engine for the Arka Citizen Incident Portal.
+Your PRIMARY job: determine if the UPLOADED PHOTO visually matches what the user's TITLE claims.
 
+═══════════════════════════════════════════
+STEP 1: DESCRIBE WHAT THE IMAGE SHOWS
+═══════════════════════════════════════════
+Look at the image carefully. Describe the PRIMARY visual subject:
+- What objects, scenes, or conditions are visible?
+- Is there any hazard, damage, or emergency visible?
+- Or is it a normal/mundane scene (building, street, room, person, food, animal, meme)?
+
+═══════════════════════════════════════════
+STEP 2: COMPARE IMAGE vs TITLE
+═══════════════════════════════════════════
 Reported Title: "${reportedTitle || 'Not explicitly provided'}"
 Reported Description: "${reportedDesc || 'No description provided'}"
-Landmark / Location: "${landmark || 'Not specified'}"
-EXIF Location: "${JSON.stringify(exifLocation || {})}"
+Location: "${landmark || 'Not specified'}"
 
-CORE TASKS:
-1. Visually identify what the image actually depicts (e.g. fire/smoke, flood/standing water, deep potholes, fallen trees, overflowing garbage, normal building/street, selfie/unrelated).
-2. Semantically analyze the claim made in the Reported Title (what problem or hazard is being asserted).
-3. Directly compare the visual subject against the title's claim to compute photoTitleMatchScore (0 to 100%):
-   - High match (88% to 98%): Photo visually shows the exact hazard claimed (e.g. photo shows fire + title "Fire Breakout"; photo shows flooded road + title "Waterlogging").
-   - Moderate match (50% to 70%): Photo shows related context but specific hazard is minor or ambiguous.
-   - Low / Wrong Image match (5% to 15%): Photo shows an unrelated scene, ordinary building, clear road, room, meme, selfie, or wrong hazard (e.g. photo shows a building + title "Waterlogging", or photo shows fire + title "Waterlogging"). NEVER assign 20-30% to wrong images.
-4. Provide a concise 1-sentence photoTitleExplanation explaining clearly why they match or do not match.
-5. Standardize and generate a clean, professional aiTitle for the incident feed.
-6. Classify into one category: "Road Block", "Waterlogging", "Accident", "Fire", "Garbage", "Broken Road", "Fallen Tree", "Power Failure", "Water Leakage", "Building Damage", "Animal Hazard", "Traffic Congestion", "Other".
-7. Extract 3-5 keywords.
-8. Estimate severity: "Low", "Medium", "High", or "Critical".
-9. Flag isSpamOrIrrelevant as true if the photo is spam or completely unrelated.
+Now compare what you SEE in the image with what the TITLE CLAIMS.
+
+═══════════════════════════════════════════
+SCORING RULES (STRICT — follow exactly)
+═══════════════════════════════════════════
+
+photoTitleMatchScore must reflect VISUAL EVIDENCE ONLY:
+
+■ 85-98%: Image CLEARLY shows the exact hazard the title claims.
+  Example: Title "Fire Breakout" + Image shows visible flames/smoke = 90-95%
+  Example: Title "Waterlogging" + Image shows flooded/submerged road = 90-95%
+  Example: Title "Pothole on Main Road" + Image shows a large pothole = 88-92%
+
+■ 50-70%: Image shows RELATED but AMBIGUOUS context.
+  Example: Title "Waterlogging" + Image shows wet road but no standing water = 55-65%
+  Example: Title "Fire" + Image shows smoke in distance but no flames = 50-60%
+
+■ 5-15%: Image shows something COMPLETELY DIFFERENT from the title.
+  Example: Title "Waterlogging" + Image shows a sunny building = 5-10%
+  Example: Title "Fire Breakout" + Image shows a normal street = 5-8%
+  Example: Title "Garbage Overflow" + Image shows a selfie = 3-5%
+  Example: Title "Road Damage" + Image shows food/animal/random object = 5-10%
+  Example: Title "Waterlogging" + Image shows fire = 3-5% (OPPOSITE hazard!)
+
+■ FORBIDDEN RANGE 20-45%: NEVER use this range. Either the image shows the hazard (≥50%) or it clearly doesn't (≤15%). There is no middle ground.
+
+■ If the image is clearly a meme, selfie, screenshot, food photo, or completely unrelated to any civic incident, score ≤ 5% and set isSpamOrIrrelevant = true.
+
+═══════════════════════════════════════════
+CATEGORY CLASSIFICATION
+═══════════════════════════════════════════
+Classify based on what the IMAGE actually shows (not just the title):
+"Road Block", "Waterlogging", "Accident", "Fire", "Garbage", "Broken Road", "Fallen Tree", "Power Failure", "Water Leakage", "Building Damage", "Animal Hazard", "Traffic Congestion", "Other"
+
+If the image doesn't match the title's category, classify based on what the IMAGE shows. If the image shows no incident at all, use "Other".
+
+═══════════════════════════════════════════
+OUTPUT FIELDS
+═══════════════════════════════════════════
+- visualDescription: 1-sentence factual description of what the image shows (be specific)
+- photoTitleMatchScore: 0-100 following the strict scoring rules above
+- photoTitleExplanation: 1-sentence explaining WHY the score is what it is, referencing both the image content and the title
+- aiTitle: Clean professional headline for the incident feed
+- category: Based on the IMAGE content, not the title
+- keywords: 3-5 relevant tags
+- severity: "Low", "Medium", "High", or "Critical" (based on visible damage severity)
+- aiConfidence: Same as photoTitleMatchScore
+- detectedSummary: 1-sentence summary of detected conditions
+- isSpamOrIrrelevant: true if image is spam/selfie/meme/food/completely unrelated
+- spamReason: Explain why if flagged as spam
 `;
 
       parts.push({ text: promptText });
 
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.6-flash',
         contents: { parts },
         config: {
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              photoTitleMatchScore: { type: Type.NUMBER, description: 'Relevance score 0 to 100 comparing photo to title' },
-              photoTitleExplanation: { type: Type.STRING, description: '1-sentence explanation of why photo matches or does not match title' },
+              visualDescription: { type: Type.STRING, description: 'Factual 1-sentence description of what the image actually shows' },
+              photoTitleMatchScore: { type: Type.NUMBER, description: 'Relevance score 0 to 100 comparing photo to title (strict rules: 85-98 match, 50-70 ambiguous, 5-15 mismatch, NEVER 20-45)' },
+              photoTitleExplanation: { type: Type.STRING, description: '1-sentence explanation referencing both image content and title' },
               aiTitle: { type: Type.STRING, description: 'Standardized concise headline for incident feed' },
-              category: { type: Type.STRING, description: 'One of the 13 valid incident categories' },
+              category: { type: Type.STRING, description: 'Category based on IMAGE content, one of 13 valid categories' },
               keywords: {
                 type: Type.ARRAY,
                 items: { type: Type.STRING },
                 description: '3-5 hazard tags',
               },
               severity: { type: Type.STRING, description: 'Low, Medium, High, or Critical' },
-              aiConfidence: { type: Type.NUMBER, description: 'Match confidence percentage (same as photoTitleMatchScore)' },
+              aiConfidence: { type: Type.NUMBER, description: 'Same as photoTitleMatchScore' },
               detectedSummary: { type: Type.STRING, description: '1-sentence visual summary of detected conditions' },
-              isSpamOrIrrelevant: { type: Type.BOOLEAN, description: 'True if image is spam/meme/selfie' },
+              isSpamOrIrrelevant: { type: Type.BOOLEAN, description: 'True if image is spam/meme/selfie/food/completely unrelated' },
               spamReason: { type: Type.STRING, description: 'Reason if flagged as spam or misleading' },
             },
             required: [
+              'visualDescription',
               'photoTitleMatchScore',
               'photoTitleExplanation',
               'aiTitle',
@@ -254,6 +309,33 @@ CORE TASKS:
       if (!parsedResult.photoTitleExplanation) {
         parsedResult.photoTitleExplanation = `Visual analysis confirmed ${parsedResult.photoTitleMatchScore}% match with reported title.`;
       }
+
+      // Sanity check: if score is in the forbidden 20-45 range, snap it to the nearest valid range
+      if (parsedResult.photoTitleMatchScore > 15 && parsedResult.photoTitleMatchScore < 50) {
+        // Check if visual description contradicts the title category
+        const visualDesc = (parsedResult.visualDescription || '').toLowerCase();
+        const titleCategory = reportedTitle.toLowerCase();
+        const hasVisualMatch = visualDesc.includes('fire') && titleCategory.includes('fire')
+          || visualDesc.includes('water') && (titleCategory.includes('water') || titleCategory.includes('flood'))
+          || visualDesc.includes('pothole') && titleCategory.includes('road')
+          || visualDesc.includes('garbage') && (titleCategory.includes('garbage') || titleCategory.includes('trash'))
+          || visualDesc.includes('tree') && titleCategory.includes('tree');
+
+        if (!hasVisualMatch) {
+          parsedResult.photoTitleMatchScore = 12;
+          parsedResult.aiConfidence = 12;
+        } else {
+          parsedResult.photoTitleMatchScore = 55;
+          parsedResult.aiConfidence = 55;
+        }
+      }
+
+      // Log the AI result for debugging
+      console.log(`[AI Result] Title: "${reportedTitle}" | Score: ${parsedResult.photoTitleMatchScore}% | Visual: "${parsedResult.visualDescription}" | Category: ${parsedResult.category}`);
+
+      // Mark as AI-vision verified
+      parsedResult.imageVerifiedByAI = true;
+      parsedResult.visualSubjectDetected = parsedResult.visualDescription || parsedResult.detectedSummary || 'analyzed';
 
       return res.json(parsedResult);
     } catch (geminiError) {
@@ -279,16 +361,31 @@ app.post('/api/ai/detect-duplicates', async (req, res) => {
 
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      // Basic keyword matching fallback
+      // Enhanced keyword + location matching fallback
       const candCat = candidateReport.category;
-      const match = existingIncidents.find((i) => i.status === 'Active' && i.category === candCat);
+      const candLocation = (candidateReport.locationName || '').toLowerCase();
+      const candTitleWords = (candidateReport.aiTitle || '').toLowerCase().split(/\s+/).filter((w: string) => w.length > 3);
+
+      const match = existingIncidents.find((i) => {
+        if (i.status !== 'Active') return false;
+        if (i.category !== candCat) return false;
+        // Check for location overlap (shared words)
+        const existingLocation = (i.locationName || '').toLowerCase();
+        const locationOverlap = candLocation && existingLocation &&
+          candLocation.split(/\s+/).some((w: string) => w.length > 3 && existingLocation.includes(w));
+        // Check for title keyword overlap
+        const existingTitle = (i.aiTitle || '').toLowerCase();
+        const titleOverlap = candTitleWords.some((w: string) => existingTitle.includes(w));
+        return locationOverlap || titleOverlap;
+      });
+
       if (match) {
         return res.json({
           hasDuplicate: true,
           duplicateIncidentId: match.id,
           matchedTitle: match.aiTitle,
-          matchConfidence: 88,
-          reason: `A similar active ${candCat} incident is already reported at ${match.locationName}`,
+          matchConfidence: 75,
+          reason: `A similar active ${candCat} incident is already reported at ${match.locationName}. Category and location/title keywords overlap.`,
         });
       }
       return res.json({ hasDuplicate: false });
@@ -321,7 +418,7 @@ Return JSON matching schema.
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
@@ -379,7 +476,7 @@ Return JSON with:
 `;
 
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.6-flash',
       contents: prompt,
       config: {
         responseMimeType: 'application/json',
