@@ -11,7 +11,7 @@
     "lint": "tsc --noEmit",
     "test": "tsx --test tests/**/*.test.ts",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist"
+    "deploy": "npx gh-pages -d dist"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
