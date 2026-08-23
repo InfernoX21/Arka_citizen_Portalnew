@@ -9,6 +9,7 @@ import {
   Send,
   Share2,
   ShieldAlert,
+  Sparkles,
   ThumbsUp,
   Trash2,
   User,

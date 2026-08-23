@@ -1,9 +1,35 @@
-import test, { describe, it } from 'node:test';
+import test, { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn, ChildProcess } from 'node:child_process';
 
-const BASE_URL = 'http://localhost:3000';
+const TEST_PORT = '3099';
+const BASE_URL = `http://localhost:${TEST_PORT}`;
 const GOOGLE_VERIFY_URL = 'https://www.google.com/recaptcha/api/siteverify';
 const TEST_SECRET = '6LeIxAcTAAAAAGG-vFI1TnRWxMZNFuojJ4WifJWe';
+
+let serverProc: ChildProcess | null = null;
+
+before(async () => {
+  serverProc = spawn('node', ['dist/server.cjs'], {
+    cwd: process.cwd(),
+    stdio: 'ignore',
+    env: { ...process.env, NODE_ENV: 'production', PORT: TEST_PORT },
+  });
+
+  for (let i = 0; i < 40; i++) {
+    await new Promise((r) => setTimeout(r, 250));
+    try {
+      const res = await fetch(`${BASE_URL}/api/recaptcha-site-key`);
+      if (res.status === 200) break;
+    } catch {}
+  }
+});
+
+after(() => {
+  if (serverProc) {
+    serverProc.kill();
+  }
+});
 
 describe('🤖 Bot Protection & Human Verification Test Suite', () => {
 

@@ -148,3 +148,38 @@ export interface AIAnalysisResult {
   imageVerifiedByAI?: boolean; // true = Gemini vision actually analyzed the image; false = text-only heuristic
   visualSubjectDetected?: string; // What the AI/heuristic thinks the photo shows (e.g. 'fire', 'flood', 'unknown')
 }
+
+export interface Junction {
+  [key: string]: any;
+}
+
+export interface DigitalTwinVehicle {
+  [key: string]: any;
+}
+
+export interface Hospital {
+  [key: string]: any;
+}
+
+export type AmbulanceStatus = string;
+
+export interface Ambulance {
+  [key: string]: any;
+}
+
+export interface LogEvent {
+  [key: string]: any;
+}
+
+export interface RoadSegment {
+  [key: string]: any;
+}
+
+export interface HistoricalIncident {
+  [key: string]: any;
+}
+
+export interface CameraFeed {
+  [key: string]: any;
+}
+
